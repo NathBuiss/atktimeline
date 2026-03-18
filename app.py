@@ -1,7 +1,8 @@
 import os
 import click
 from datetime import datetime
-from flask import Flask, render_template, redirect, url_for, flash, request, abort
+from flask import Flask, render_template, redirect, url_for, flash, request, abort, make_response
+from io import BytesIO
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from flask_wtf import FlaskForm
@@ -345,6 +346,35 @@ def delete_event(timeline_id, event_id):
     db.session.commit()
     flash('Event deleted.', 'success')
     return redirect(url_for('view_timeline', timeline_id=timeline.id))
+
+@app.route('/timeline/<int:timeline_id>/report')
+@login_required
+def timeline_report(timeline_id):
+    timeline = Timeline.query.get_or_404(timeline_id)
+    if timeline.user_id != current_user.id:
+        abort(403)
+    events = timeline.events.all()
+    return render_template('timeline_report.html', timeline=timeline, events=events)
+
+
+@app.route('/timeline/<int:timeline_id>/export.pdf')
+@login_required
+def export_timeline_pdf(timeline_id):
+    from xhtml2pdf import pisa
+    timeline = Timeline.query.get_or_404(timeline_id)
+    if timeline.user_id != current_user.id:
+        abort(403)
+    events = timeline.events.all()
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+    html = render_template('timeline_pdf.html', timeline=timeline, events=events, now=now)
+    buf = BytesIO()
+    pisa.pisaDocument(BytesIO(html.encode('utf-8')), buf)
+    response = make_response(buf.getvalue())
+    response.headers['Content-Type'] = 'application/pdf'
+    filename = timeline.title.replace(' ', '_')
+    response.headers['Content-Disposition'] = f'attachment; filename="{filename}.pdf"'
+    return response
+
 
 # ---------------------
 # CLI Commands

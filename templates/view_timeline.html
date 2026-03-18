@@ -29,6 +29,12 @@
             <a href="{{ url_for('add_event', timeline_id=timeline.id) }}" class="btn btn-primary btn-sm">
                 <i class="fas fa-plus"></i> Add Event
             </a>
+            <a href="{{ url_for('timeline_report', timeline_id=timeline.id) }}" class="btn btn-outline btn-sm">
+                <i class="fas fa-table"></i> Overview
+            </a>
+            <a href="{{ url_for('export_timeline_pdf', timeline_id=timeline.id) }}" class="btn btn-outline btn-sm">
+                <i class="fas fa-file-pdf"></i> Export PDF
+            </a>
             <a href="{{ url_for('edit_timeline', timeline_id=timeline.id) }}" class="btn btn-outline btn-sm">
                 <i class="fas fa-edit"></i> Edit
             </a>
