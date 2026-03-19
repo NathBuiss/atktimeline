@@ -359,8 +359,13 @@ def timeline_report(timeline_id):
 def _pdf_safe(text):
     """Sanitize text for fpdf2 built-in fonts (Latin-1 only). Replaces unencodable chars."""
     if text is None:
-        return 'N/A'
+        return ''
     return str(text).encode('latin-1', errors='replace').decode('latin-1')
+
+
+def _hex_to_rgb(hex_color):
+    h = hex_color.lstrip('#')
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
 @app.route('/timeline/<int:timeline_id>/export.pdf')
@@ -372,62 +377,149 @@ def export_timeline_pdf(timeline_id):
         abort(403)
     events = timeline.events.all()
 
-    pdf = FPDF(orientation='L', unit='mm', format='A4')
-    pdf.set_margins(10, 10, 10)
+    pdf = FPDF(orientation='P', unit='mm', format='A4')
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_margins(15, 15, 15)
     pdf.add_page()
 
-    # Title
-    pdf.set_font('Helvetica', 'B', 15)
-    pdf.cell(0, 8, _pdf_safe(timeline.title), new_x='LMARGIN', new_y='NEXT')
+    # ── Header block ────────────────────────────────────────────
+    pdf.set_fill_color(15, 23, 42)
+    pdf.rect(0, 0, 210, 46, 'F')
 
-    # Metadata line
-    pdf.set_font('Helvetica', '', 8)
-    meta = (f"Severity: {timeline.severity.upper()}  |  Status: {timeline.status.upper()}"
-            + (f"  |  Attack Type: {_pdf_safe(timeline.attack_type)}" if timeline.attack_type else '')
-            + f"  |  Events: {len(events)}"
-            + f"  |  Created: {timeline.created_at.strftime('%Y-%m-%d %H:%M UTC')}"
-            + f"  |  Exported: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
-    pdf.cell(0, 5, _pdf_safe(meta), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_xy(15, 10)
+    pdf.set_font('Helvetica', 'B', 17)
+    pdf.set_text_color(241, 245, 249)
+    pdf.cell(0, 9, _pdf_safe(timeline.title), new_x='LMARGIN', new_y='NEXT')
 
-    if timeline.description:
-        pdf.set_font('Helvetica', 'I', 8)
-        pdf.multi_cell(0, 4, _pdf_safe(timeline.description))
-
-    pdf.ln(4)
-
-    # Table header
-    cols = [('Time', 32), ('Phase', 38), ('Event', 72), ('Source IP', 28),
-            ('Dest IP', 28), ('MITRE', 18), ('IOC / Indicator', 51)]
-    pdf.set_fill_color(15, 52, 96)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font('Helvetica', 'B', 8)
-    for label, w in cols:
-        pdf.cell(w, 7, label, border=1, fill=True)
+    # Severity + Status filled badges
+    pdf.set_x(15)
+    for label, color_hex in [
+        (timeline.severity.upper(), timeline.severity_color),
+        (timeline.status.upper(),   timeline.status_color),
+    ]:
+        r, g, b = _hex_to_rgb(color_hex)
+        badge_text = f" {label} "
+        pdf.set_font('Helvetica', 'B', 7.5)
+        w = pdf.get_string_width(badge_text) + 2
+        pdf.set_fill_color(r, g, b)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(w, 6, badge_text, fill=True)
+        pdf.cell(3, 6, '')
     pdf.ln()
 
-    # Table rows
-    pdf.set_text_color(0, 0, 0)
-    fill = False
-    for event in events:
-        pdf.set_fill_color(249, 250, 251) if fill else pdf.set_fill_color(255, 255, 255)
-        pdf.set_font('Helvetica', '', 7.5)
-        row = [
-            (_pdf_safe(event.event_time.strftime('%Y-%m-%d %H:%M')), 32),
-            (_pdf_safe(event.event_type.replace('_', ' ').title()), 38),
-            (_pdf_safe(event.title[:55]), 72),
-            (_pdf_safe(event.source_ip or 'N/A'), 28),
-            (_pdf_safe(event.destination_ip or 'N/A'), 28),
-            (_pdf_safe(event.mitre_technique or 'N/A'), 18),
-            (_pdf_safe((event.indicator or 'N/A')[:45]), 51),
-        ]
-        for text, w in row:
-            pdf.cell(w, 6, text, border=1, fill=True)
-        pdf.ln()
-        fill = not fill
+    # Metadata row
+    pdf.set_x(15)
+    pdf.set_font('Helvetica', '', 7.5)
+    pdf.set_text_color(148, 163, 184)
+    meta_parts = []
+    if timeline.attack_type:
+        meta_parts.append(_pdf_safe(f"Attack: {timeline.attack_type}"))
+    meta_parts.append(f"Created: {timeline.created_at.strftime('%Y-%m-%d %H:%M UTC')}")
+    meta_parts.append(f"Exported: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    meta_parts.append(f"{len(events)} event{'s' if len(events) != 1 else ''}")
+    pdf.cell(0, 5, _pdf_safe("  |  ".join(meta_parts)), new_x='LMARGIN', new_y='NEXT')
+
+    if timeline.description:
+        pdf.set_x(15)
+        pdf.set_font('Helvetica', 'I', 8)
+        pdf.set_text_color(148, 163, 184)
+        desc = timeline.description
+        if len(desc) > 150:
+            desc = desc[:150] + '...'
+        pdf.cell(0, 5, _pdf_safe(desc), new_x='LMARGIN', new_y='NEXT')
+
+    # ── Events ──────────────────────────────────────────────────
+    LINE_X = 22   # x-center of the vertical dot line
+    DOT_R  = 2.5  # dot radius (mm)
+    CARD_X = 30   # left edge of event content
+    CARD_W = 165  # content width (CARD_X to 195)
+
+    pdf.set_y(53)
+
+    for idx, event in enumerate(events):
+        # Manual page break guard
+        if pdf.get_y() > 262:
+            pdf.add_page()
+
+        start_y = pdf.get_y()
+        dot_cy  = start_y + 4
+        ec_r, ec_g, ec_b = _hex_to_rgb(event.type_color)
+
+        # Colored dot
+        pdf.set_fill_color(ec_r, ec_g, ec_b)
+        pdf.ellipse(LINE_X - DOT_R, dot_cy - DOT_R, DOT_R * 2, DOT_R * 2, 'F')
+
+        # Title (bold, left) + timestamp (small, right)
+        pdf.set_xy(CARD_X, start_y)
+        timestamp = _pdf_safe(event.event_time.strftime('%b %d, %Y  %H:%M'))
+        pdf.set_font('Helvetica', '', 8)
+        ts_w = pdf.get_string_width(timestamp) + 2
+        title_w = CARD_W - ts_w - 2
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.set_text_color(241, 245, 249)
+        pdf.cell(title_w, 6, _pdf_safe(event.title[:65]))
+        pdf.set_font('Helvetica', '', 8)
+        pdf.set_text_color(100, 116, 139)
+        pdf.cell(ts_w, 6, timestamp, align='R', new_x='LMARGIN', new_y='NEXT')
+
+        # Phase label (colored)
+        pdf.set_x(CARD_X)
+        pdf.set_font('Helvetica', 'B', 7.5)
+        pdf.set_text_color(ec_r, ec_g, ec_b)
+        pdf.cell(0, 5, _pdf_safe(event.event_type.replace('_', ' ').title()),
+                 new_x='LMARGIN', new_y='NEXT')
+
+        # Description
+        if event.description:
+            pdf.set_x(CARD_X)
+            pdf.set_font('Helvetica', 'I', 8)
+            pdf.set_text_color(148, 163, 184)
+            pdf.multi_cell(CARD_W, 4, _pdf_safe(event.description),
+                           new_x='LMARGIN', new_y='NEXT')
+
+        # Tags: Src / Dst / MITRE / IOC
+        tags = []
+        if event.source_ip:
+            tags.append(f"Src: {_pdf_safe(event.source_ip)}")
+        if event.destination_ip:
+            tags.append(f"Dst: {_pdf_safe(event.destination_ip)}")
+        if event.mitre_technique:
+            tags.append(f"MITRE: {_pdf_safe(event.mitre_technique)}")
+        if event.indicator:
+            tags.append(f"IOC: {_pdf_safe(event.indicator[:70])}")
+        if tags:
+            pdf.set_x(CARD_X)
+            pdf.set_font('Helvetica', '', 8)
+            pdf.set_text_color(100, 116, 139)
+            # \xb7 = Latin-1 middle dot separator
+            pdf.cell(0, 5, "   \xb7   ".join(tags), new_x='LMARGIN', new_y='NEXT')
+
+        end_y = pdf.get_y()
+
+        # Connector line + separator between events
+        if idx < len(events) - 1:
+            pdf.set_draw_color(51, 65, 85)
+            pdf.set_line_width(0.4)
+            pdf.line(LINE_X, dot_cy + DOT_R, LINE_X, end_y + 5)
+            pdf.set_draw_color(30, 41, 59)
+            pdf.set_line_width(0.2)
+            pdf.line(CARD_X, end_y + 2, 195, end_y + 2)
+            pdf.set_y(end_y + 7)
+        else:
+            pdf.set_y(end_y + 3)
+
+    # Footer
+    pdf.set_y(-12)
+    pdf.set_font('Helvetica', '', 7)
+    pdf.set_text_color(100, 116, 139)
+    pdf.cell(0, 5, _pdf_safe(
+        f"ATK Timeline  |  {timeline.title}  |  "
+        f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+    ), align='C')
 
     response = make_response(bytes(pdf.output()))
     response.headers['Content-Type'] = 'application/pdf'
-    filename = _pdf_safe(timeline.title.replace(' ', '_'))
+    filename = ''.join(c if c.isalnum() or c in '-_' else '_' for c in timeline.title)
     response.headers['Content-Disposition'] = f'attachment; filename="{filename}.pdf"'
     return response
 
